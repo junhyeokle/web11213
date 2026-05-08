@@ -1,0 +1,26 @@
+# Flask 서버는 Vercel에 올라가면 안 됨 (GCP VM에서 별도 호스팅)
+server/
+
+# 로컬 환경
+.env
+.env.local
+.env.*.local
+
+# 빌드 캐시
+.next/
+out/
+node_modules/
+
+# Python (혹시 루트에 생기더라도 차단)
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# 비밀키
+*.pem
+firebase-key.json
+serviceAccountKey.json
+
+# OS
+.DS_Store

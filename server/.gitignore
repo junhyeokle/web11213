@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+firebase-key.json
+serviceAccountKey.json
+venv/
+.venv/
+*.egg-info/
+
+# 런타임 생성 파일 (이미지 처리 결과)
+storage/
