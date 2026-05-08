@@ -39,6 +39,10 @@ from fingerprint import (
     compare_fingerprints,
 )
 
+# 적대적 노이즈는 GPU 환경(AI_NOISE_ENABLED=1)에서만 동작.
+# CPU 전용 환경에서도 import 자체로는 에러 안 남.
+import adversarial
+
 
 # ============================================================
 # 로깅 + Flask
@@ -204,6 +208,34 @@ def protect():
             img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
         original = img.copy()
 
+        # 4-1) 적대적 노이즈 (GPU 환경에서만, 워터마크 이전 단계)
+        ai_noise_actually_applied = False
+        if apply_ai_noise:
+            if not adversarial.is_available():
+                log.warning(
+                    "applyAINoise=true 요청됐지만 AI_NOISE_ENABLED=1 환경변수가 없거나 "
+                    "PyTorch가 설치되지 않음 — 이 옵션은 건너뜁니다."
+                )
+            else:
+                try:
+                    from PIL import Image as PILImage
+                    # cv2 BGR → PIL RGB
+                    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    pil_in = PILImage.fromarray(rgb)
+                    strength_val = int(request.form.get("strength", "50") or "50")
+                    pil_out = adversarial.protect_image(pil_in, strength=strength_val)
+                    # PIL RGB → cv2 BGR, 원본 해상도(8의 배수)에 맞춤
+                    out_arr = np.array(pil_out)
+                    out_bgr = cv2.cvtColor(out_arr, cv2.COLOR_RGB2BGR)
+                    out_h, out_w = (img.shape[0] // 8) * 8, (img.shape[1] // 8) * 8
+                    img = cv2.resize(out_bgr, (out_w, out_h), interpolation=cv2.INTER_AREA)
+                    original = img.copy()  # 워터마크 PSNR 비교 기준도 갱신
+                    ai_noise_actually_applied = True
+                    log.info("적대적 노이즈 적용 완료")
+                except Exception as e:
+                    log.exception("AI 노이즈 처리 실패")
+                    return jsonify({"error": f"AI 노이즈 실패: {e}"}), 500
+
         # 5) 워터마크 적용
         asset_id = metadata or f"ASSET-{uuid.uuid4().hex[:8].upper()}"
         watermarked = img
@@ -261,7 +293,7 @@ def protect():
             "assetId": asset_id,
             "watermarkApplied": apply_watermark,
             "fingerprintApplied": apply_fingerprint,
-            "aiNoiseApplied": False,
+            "aiNoiseApplied": ai_noise_actually_applied,
             "watermarkId": watermark_id,
             "fingerprint": fingerprint_dict,
             "storagePath": storage_path,
@@ -282,7 +314,7 @@ def protect():
                 "customerId": customer_id,
                 "isNewCustomer": is_new_customer,
                 "appliedAt": now.isoformat(),
-                "noise": False,
+                "noise": ai_noise_actually_applied,
                 "watermark": apply_watermark,
                 "fingerprint": apply_fingerprint,
                 "fingerprintHash": fingerprint_hash_short,

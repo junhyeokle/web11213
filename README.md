@@ -67,13 +67,18 @@ images/{imageId}              # 이미지 메타데이터 (UUID)
 - Firestore Database + Storage 활성화
 - 서비스 계정 키 (`firebase-key.json`) 다운로드
 
-### 2. VM 서버 배포
+### 2. 백엔드 서버 배포
 
-`server/README.md`의 **2~4번 섹션** 참고. 요약:
-- Google Cloud Compute Engine VM 생성 (Ubuntu, e2-small)
-- 5000 → 8080 포트 방화벽 열기
-- 코드 + Firebase 키 업로드
-- 의존성 설치 후 Flask 또는 gunicorn으로 실행
+GPU 사용 여부에 따라 두 가지 경로:
+
+**A. CPU만 (워터마크/지문만, AI 노이즈 OFF)** — `server/README.md`의 GCP VM 가이드.
+- e2-small 정도면 충분
+- `.env`에서 `AI_NOISE_ENABLED=0` (또는 미설정)
+
+**B. GPU 포함 (적대적 노이즈 ON)** — `server/RUNPOD.md` 참고.
+- RunPod RTX A4000 / T4 Pod
+- HTTPS URL 자동 발급 (`https://{podid}-8080.proxy.runpod.net`)
+- `.env`에서 `AI_NOISE_ENABLED=1` + `pip install -r requirements-gpu.txt`
 
 ### 3. Next.js 실행
 
