@@ -180,3 +180,5 @@ RunPod 콘솔에서 Pod 카드의:
 | CORS 에러 (브라우저 콘솔) | `.env`의 `ALLOWED_ORIGINS`에 본인 Vercel 도메인 정확히 들어갔는지 확인. 프로토콜(`https://`)도 포함. |
 | `applyAINoise=true` 무시됨 | `.env`의 `AI_NOISE_ENABLED=1` + `set -a; source .env; set +a` 다시 실행 후 서버 재시작. |
 | Pod 재시작 후 의존성 사라짐 | `pip install`은 컨테이너 디스크에 깔리고 Stop/Start하면 그대로. Terminate 후 재생성하면 다시 깔아야 함. |
+| `cuda: False` 또는 `torch 2.11.0+cu130` | trustmark/open_clip이 새 torch 끌어옴. 원복: `pip install --force-reinstall "torch==2.8.0" "torchvision==0.23.0" --index-url https://download.pytorch.org/whl/cu128` |
+| `cv2 FAIL: numpy._core.multiarray failed` | opencv 4.13이 numpy 2 요구. 원복: `pip install --force-reinstall "opencv-python-headless<4.11" "numpy<2"` |
