@@ -1,16 +1,22 @@
-# GPU 환경(RunPod 등)에서 적대적 노이즈 모듈 사용을 위한 추가 의존성.
-# RunPod PyTorch 템플릿엔 torch가 이미 깔려있어서 보통은 아래 4개만 더 깔면 됨.
+# GPU 환경(RunPod 등)에서 적대적 노이즈 + TrustMark + CLIP 사용을 위한 추가 의존성.
+# RunPod PyTorch 템플릿엔 torch가 이미 깔려있어서 보통은 아래만 더 깔면 됨.
 #
 # 사용법:
 #   pip install -r requirements.txt
-#   pip install -r requirements-gpu.txt
+#   pip install -r requirements-gpu.txt --ignore-installed blinker
 #
-# torch 버전을 직접 지정하고 싶으면 이 파일 상단에 다음 같이 추가:
-#   --extra-index-url https://download.pytorch.org/whl/cu121
-#   torch==2.1.2+cu121
-#   torchvision==0.16.2+cu121
+# torch 버전 충돌 시:
+#   pip install "torch==2.8.0" "torchvision==0.23.0" \
+#     --index-url https://download.pytorch.org/whl/cu128 --ignore-installed
 
+# 적대적 노이즈 (Stable Diffusion 기반)
 diffusers>=0.27.0
 transformers>=4.39.0
 accelerate>=0.28.0
 safetensors>=0.4.2
+
+# TrustMark 학습 워터마크 (Adobe)
+trustmark>=0.7.0
+
+# OpenCLIP 의미 임베딩
+open_clip_torch>=2.24.0

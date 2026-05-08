@@ -74,3 +74,41 @@ export interface ComparisonResult {
   verdict: "exact" | "likely" | "possibly" | "different";
   verdictLabel: string;
 }
+
+// ============================================================
+// /api/verify — 의심 이미지 1장으로 등록된 자산들 중 매칭 검색
+// ============================================================
+export interface VerifyMatch {
+  id: string;
+  assetId: string;
+  originalFilename: string | null;
+  downloadUrl: string | null;
+  registeredCode: string | null;       // 그 자산의 TrustMark 코드
+  watermarkMatch: "yes" | "partial" | "no";
+  cosineSimilarity: number | null;     // CLIP 코사인 유사도 (0~1)
+  score: number;                        // 정렬용 종합 점수
+  createdAt: string | null;
+}
+
+export interface VerifyVerdict {
+  verdict:
+    | "plagiarism_confirmed"
+    | "highly_suspicious"
+    | "ai_regenerated_suspicious"
+    | "manual_review"
+    | "not_plagiarism";
+  label: string;                        // 한국어 라벨
+  confidence: string;
+  reason: string;
+  wmMatch: "yes" | "partial" | "no";
+  clipVerdict: "high" | "match" | "review" | "no" | "unknown";
+  cosineSimilarity: number | null;
+}
+
+export interface VerifyResult {
+  extractedCode: string | null;
+  watermarkPresent: boolean;
+  clipAvailable: boolean;
+  matches: VerifyMatch[];               // 상위 5개
+  best: VerifyVerdict;
+}

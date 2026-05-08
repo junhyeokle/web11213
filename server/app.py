@@ -17,6 +17,7 @@ import os
 import uuid
 import logging
 from datetime import datetime, timezone
+from typing import Optional, List
 
 import bcrypt
 import cv2
@@ -42,6 +43,9 @@ from fingerprint import (
 # 적대적 노이즈는 GPU 환경(AI_NOISE_ENABLED=1)에서만 동작.
 # CPU 전용 환경에서도 import 자체로는 에러 안 남.
 import adversarial
+
+# TrustMark 학습 워터마크 + CLIP 의미 임베딩 (각각 환경변수로 활성화)
+import trustmark_clip
 
 
 # ============================================================
@@ -248,6 +252,31 @@ def protect():
             except ValueError as e:
                 return jsonify({"error": f"워터마크 실패: {e}"}), 400
 
+        # 5-1) TrustMark 학습 워터마크 (옵션, GPU 환경)
+        # AI 재생성/스타일 변환에도 메시지가 살아남도록 학습된 워터마크.
+        # DCT 워터마크 위에 한 번 더 입혀 이중 방어. 환경변수 TRUSTMARK_ENABLED=1 필요.
+        trustmark_short_code: Optional[str] = None
+        trustmark_applied = False
+        if apply_watermark and trustmark_clip.trustmark_available():
+            try:
+                from PIL import Image as PILImage
+                rgb = cv2.cvtColor(watermarked, cv2.COLOR_BGR2RGB)
+                pil_in = PILImage.fromarray(rgb)
+                pil_out, trustmark_short_code = trustmark_clip.trustmark_embed(
+                    pil_in, asset_id
+                )
+                out_bgr = cv2.cvtColor(np.array(pil_out), cv2.COLOR_RGB2BGR)
+                # 크기 8 정렬 보장
+                oh, ow = (out_bgr.shape[0] // 8) * 8, (out_bgr.shape[1] // 8) * 8
+                if oh != out_bgr.shape[0] or ow != out_bgr.shape[1]:
+                    out_bgr = cv2.resize(out_bgr, (ow, oh), interpolation=cv2.INTER_AREA)
+                watermarked = out_bgr
+                trustmark_applied = True
+                log.info(f"TrustMark 적용: code={trustmark_short_code}")
+            except Exception as e:
+                # 실패해도 DCT 워터마크는 살아있으니 치명적이진 않음 — 로그만 남기고 계속
+                log.exception(f"TrustMark 처리 실패(무시): {e}")
+
         # 6) 지문 생성
         fingerprint_dict = None
         fingerprint_hash_short = None
@@ -256,6 +285,20 @@ def protect():
             fingerprint_dict = fingerprint_to_dict(fp)
             fingerprint_hash_short = fingerprint_dict["phash"]
             log.info(f"지문 생성 완료: {fingerprint_hash_short}")
+
+        # 6-1) CLIP 의미 임베딩 (옵션, GPU 환경)
+        # 픽셀이 다 바뀌어도 "의미"가 비슷하면 매칭됨. 768차원 float32 → Firestore에 저장.
+        clip_embedding_list: Optional[list] = None
+        if apply_fingerprint and trustmark_clip.clip_available():
+            try:
+                from PIL import Image as PILImage
+                rgb = cv2.cvtColor(watermarked, cv2.COLOR_BGR2RGB)
+                pil_in = PILImage.fromarray(rgb)
+                emb = trustmark_clip.clip_embed(pil_in)
+                clip_embedding_list = emb.tolist()  # 768개 float
+                log.info(f"CLIP 임베딩 생성: dim={len(clip_embedding_list)}")
+            except Exception as e:
+                log.exception(f"CLIP 임베딩 실패(무시): {e}")
 
         # 7) 화질 점수
         if apply_watermark:
@@ -294,6 +337,9 @@ def protect():
             "watermarkApplied": apply_watermark,
             "fingerprintApplied": apply_fingerprint,
             "aiNoiseApplied": ai_noise_actually_applied,
+            "trustmarkApplied": trustmark_applied,
+            "trustmarkCode": trustmark_short_code,
+            "clipEmbedding": clip_embedding_list,  # 768 floats or None
             "watermarkId": watermark_id,
             "fingerprint": fingerprint_dict,
             "storagePath": storage_path,
@@ -319,6 +365,9 @@ def protect():
                 "fingerprint": apply_fingerprint,
                 "fingerprintHash": fingerprint_hash_short,
                 "watermarkId": watermark_id,
+                "trustmark": trustmark_applied,
+                "trustmarkCode": trustmark_short_code,
+                "clipEmbedded": clip_embedding_list is not None,
                 "qualityScore": quality_score,
                 "downloadUrl": download_url,
                 "filename": original_filename,
@@ -348,6 +397,174 @@ def serve_file(customer_id, filename):
         return send_from_directory(safe_dir, filename, as_attachment=as_attachment)
     except FileNotFoundError:
         return jsonify({"error": "파일 없음"}), 404
+
+
+# ============================================================
+# 라우트: 표절 검증 (TrustMark + CLIP)
+# ============================================================
+@app.route("/api/verify", methods=["POST"])
+def verify():
+    """의심 이미지 한 장에서 TrustMark/CLIP을 추출/계산해
+    같은 고객의 등록된 자산들과 매칭 검색.
+
+    Form data:
+    - image (required):       의심 이미지 (LLM이 변형한 결과 등)
+    - customerName (required): 고객명
+    - password (required):     비밀번호
+
+    Returns:
+    - matches: 상위 5개 후보 (assetId, watermarkMatch, cosineSimilarity, downloadUrl)
+    - best: 가장 높은 점수의 자산에 대한 종합 판정 (judge 결과)
+    """
+    try:
+        # 1) 입력
+        file = request.files.get("image")
+        customer_name = (request.form.get("customerName") or "").strip()
+        password = request.form.get("password") or ""
+
+        if not file:
+            return jsonify({"error": "이미지 파일이 없습니다"}), 400
+        if not customer_name or not password:
+            return jsonify({"error": "고객명/비밀번호 누락"}), 400
+
+        # 2) 고객 인증 (자동 등록 안 함 — 검증은 등록된 고객만)
+        customers_ref = db.collection("customers")
+        existing = list(
+            customers_ref.where("name", "==", customer_name).limit(1).stream()
+        )
+        if not existing:
+            return jsonify({"error": "고객을 찾을 수 없습니다"}), 404
+        customer_doc = existing[0]
+        if not _check_password(
+            password, customer_doc.to_dict().get("passwordHash", "")
+        ):
+            return jsonify({"error": "비밀번호 불일치"}), 401
+        customer_id = customer_doc.id
+
+        # 3) 의심 이미지 디코딩 + PIL 변환
+        suspect_bgr, err = _decode_and_align(file)
+        if err:
+            return jsonify({"error": err}), 400
+        from PIL import Image as PILImage
+        suspect_pil = PILImage.fromarray(
+            cv2.cvtColor(suspect_bgr, cv2.COLOR_BGR2RGB)
+        )
+
+        # 4) TrustMark 추출 (가능하면)
+        extracted_code = None
+        wm_present = False
+        if trustmark_clip.trustmark_available():
+            try:
+                extracted_code, wm_present = trustmark_clip.trustmark_decode(
+                    suspect_pil
+                )
+                log.info(f"TrustMark 추출: code={extracted_code}, present={wm_present}")
+            except Exception as e:
+                log.exception(f"TrustMark 추출 실패(무시): {e}")
+
+        # 5) CLIP 임베딩 (가능하면)
+        suspect_embed = None
+        if trustmark_clip.clip_available():
+            try:
+                suspect_embed = trustmark_clip.clip_embed(suspect_pil)
+            except Exception as e:
+                log.exception(f"CLIP 임베딩 실패(무시): {e}")
+
+        # 6) 등록된 자산 조회 (최근 50개)
+        images = list(
+            db.collection("images")
+            .where("customerId", "==", customer_id)
+            .order_by("createdAt", direction=firestore.Query.DESCENDING)
+            .limit(50)
+            .stream()
+        )
+
+        if not images:
+            return jsonify(
+                {"error": "이 고객 명의로 등록된 보호 이미지가 없습니다"}
+            ), 404
+
+        # 7) 각 자산과 비교 → 점수 매기기
+        matches = []
+        for img_doc in images:
+            d = img_doc.to_dict()
+            registered_code = d.get("trustmarkCode")
+            registered_emb_list = d.get("clipEmbedding")
+
+            cos_sim = None
+            if suspect_embed is not None and registered_emb_list:
+                reg_emb = np.array(registered_emb_list, dtype=np.float32)
+                cos_sim = trustmark_clip.cosine_similarity(suspect_embed, reg_emb)
+
+            wm_match_label = "no"
+            if extracted_code and registered_code:
+                if extracted_code == registered_code:
+                    wm_match_label = "yes"
+                else:
+                    matching = sum(
+                        a == b for a, b in zip(extracted_code, registered_code)
+                    )
+                    wm_match_label = (
+                        "partial" if matching >= len(registered_code) - 2 else "no"
+                    )
+
+            # 매칭 점수: TrustMark yes=1.0, partial=0.7, no=0.0 + cos_sim 가중
+            score = 0.0
+            if wm_match_label == "yes":
+                score += 1.0
+            elif wm_match_label == "partial":
+                score += 0.5
+            if cos_sim is not None:
+                score += cos_sim  # 0~1
+
+            matches.append(
+                {
+                    "id": d.get("id"),
+                    "assetId": d.get("assetId"),
+                    "originalFilename": d.get("originalFilename"),
+                    "downloadUrl": d.get("downloadUrl"),
+                    "registeredCode": registered_code,
+                    "watermarkMatch": wm_match_label,
+                    "cosineSimilarity": cos_sim,
+                    "score": score,
+                    "createdAt": d.get("createdAt").isoformat()
+                    if d.get("createdAt")
+                    else None,
+                }
+            )
+
+        # 점수 내림차순 정렬, 상위 5개만 반환
+        matches.sort(key=lambda m: m["score"], reverse=True)
+        top = matches[:5]
+
+        # 8) 종합 판정 (best 후보 기준)
+        if top:
+            best_match = top[0]
+            verdict = trustmark_clip.judge(
+                extracted_code=extracted_code,
+                expected_code=best_match["registeredCode"],
+                cos_sim=best_match["cosineSimilarity"],
+            )
+        else:
+            verdict = trustmark_clip.judge(
+                extracted_code=extracted_code,
+                expected_code=None,
+                cos_sim=None,
+            )
+
+        return jsonify(
+            {
+                "extractedCode": extracted_code,
+                "watermarkPresent": wm_present,
+                "clipAvailable": suspect_embed is not None,
+                "matches": top,
+                "best": verdict,
+            }
+        )
+
+    except Exception as e:
+        log.exception("verify 처리 중 오류")
+        return jsonify({"error": f"서버 오류: {str(e)}"}), 500
 
 
 # ============================================================

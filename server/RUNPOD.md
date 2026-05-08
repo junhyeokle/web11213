@@ -84,6 +84,13 @@ SD_MODEL_ID=runwayml/stable-diffusion-v1-5
 AI_NOISE_STEPS=50
 AI_NOISE_EPS=16
 
+# === TrustMark + CLIP 활성화 (AI 재생성 표절 탐지) ===
+TRUSTMARK_ENABLED=1
+TRUSTMARK_MODEL_TYPE=Q
+CLIP_ENABLED=1
+CLIP_MODEL=ViT-L-14
+CLIP_PRETRAINED=openai
+
 # Pod의 외부 HTTP 프록시 URL — 콘솔 Connect 메뉴에서 확인
 # 예: https://abc123-8080.proxy.runpod.net
 PUBLIC_BASE_URL=https://YOUR-POD-ID-8080.proxy.runpod.net

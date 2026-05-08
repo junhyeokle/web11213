@@ -3,6 +3,7 @@ import {
   ProtectionResult,
   CustomerInfo,
   ComparisonResult,
+  VerifyResult,
 } from "./types";
 
 /**
@@ -115,4 +116,38 @@ export async function compareImages(
   }
 
   return (await res.json()) as ComparisonResult;
+}
+
+/**
+ * 표절 검증 — 의심 이미지 한 장을 보내서
+ * 서버에 등록된 본인 자산들 중 TrustMark/CLIP으로 매칭되는 것을 찾음.
+ *
+ * 흐름:
+ *  1) multipart/form-data로 의심 이미지 + 고객명/비밀번호 전송
+ *  2) 서버가 이미지에서 TrustMark 추출 + CLIP 임베딩 계산
+ *  3) Firestore에 저장된 같은 고객의 자산들과 비교
+ *  4) 상위 5개 후보 + 종합 판정 반환
+ */
+export async function verifyImage(
+  suspectImage: File,
+  customer: CustomerInfo
+): Promise<VerifyResult> {
+  const form = new FormData();
+  form.append("image", suspectImage);
+  form.append("customerName", customer.name);
+  form.append("password", customer.password);
+
+  const res = await fetch(`${API_BASE}/api/verify`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!res.ok) {
+    const errorPayload = await res
+      .json()
+      .catch(() => ({ error: `요청 실패 (HTTP ${res.status})` }));
+    throw new Error(errorPayload.error || `요청 실패 (${res.status})`);
+  }
+
+  return (await res.json()) as VerifyResult;
 }
